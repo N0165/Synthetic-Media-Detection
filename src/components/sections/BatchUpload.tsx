@@ -90,8 +90,8 @@ export default function BatchUpload() {
     try {
       const data = await detectBatch(files);
       setResults(data);
-    } catch (err: any) {
-      setError(err.message || "Batch processing failed.");
+   } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Batch processing failed.");
     } finally {
       setIsProcessing(false);
     }

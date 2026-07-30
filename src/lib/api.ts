@@ -79,7 +79,7 @@ export const detectMedia = async (file: File, signal?: AbortSignal): Promise<Det
     formData.append("file", file);
 
     const response = await apiClient.post<DetectionResponse>("/detect/full", formData, {
-      ...(signal && { signal: signal as any }),
+      ...(signal && { signal  }),
       timeout: 120000,
     });
     return response.data;

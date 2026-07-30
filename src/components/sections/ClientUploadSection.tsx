@@ -111,8 +111,9 @@ export default function ClientUploadSection() {
       const response = await detectMedia(file, abortControllerRef.current.signal);
       setResult(response);
       setForensics(response.forensics || {});
-    } catch (error: any) {
-      if (error.name === "CanceledError" || error.message?.includes("canceled")) {
+    } catch (error: unknown) {
+      const isCanceled = error instanceof Error && (error.name === "CanceledError" || error.message?.includes("canceled"));
+      if (isCanceled) {
         console.log("Request canceled");
         return;
       }

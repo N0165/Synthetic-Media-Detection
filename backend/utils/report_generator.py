@@ -200,7 +200,39 @@ def _media_to_rl_image(media_path: str, max_width: float = 260, max_height: floa
         pass
     return None
 
+def _generate_confidence_chart_image(timeline: list) -> Optional[RLImage]:
+    """Render the per-frame confidence timeline as a line chart PNG for the PDF."""
+    if not timeline:
+        return None
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
 
+        timestamps = [pt.get("timestamp", 0) for pt in timeline]
+        confidences = [pt.get("confidence", 0) for pt in timeline]
+
+        fig, ax = plt.subplots(figsize=(6.4, 2.6), dpi=150)
+        ax.plot(timestamps, confidences, color="#ef4444", linewidth=1.5)
+        ax.axhline(y=50, color="#999999", linestyle="--", linewidth=0.8)
+        ax.set_xlabel("Time (s)", fontsize=8)
+        ax.set_ylabel("Fakeness %", fontsize=8)
+        ax.set_ylim(0, 100)
+        ax.set_title("Per-Frame Confidence Timeline", fontsize=9)
+        ax.tick_params(labelsize=7)
+        fig.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png")
+        plt.close(fig)
+        buf.seek(0)
+
+        pil = Image.open(buf)
+        return _pil_to_rl_image(pil, max_width=460, max_height=200)
+    except Exception as e:
+        print(f"[ReportGen] Confidence chart generation failed: {e}")
+        return None
+    
 def _severity_icon(severity: str) -> str:
     """Map severity to a unicode marker for the PDF."""
     return {
@@ -500,7 +532,21 @@ def _build_forensic_visuals(elements, styles, forensics):
         elements.append(Spacer(1, 4))
         elements.append(_pil_to_rl_image(pil, max_width=460, max_height=220))
         elements.append(Spacer(1, 10))
-
+    # Confidence timeline chart (video)
+    timeline = forensics.get("frame_confidence_timeline", [])
+    if timeline:
+        has_any = True
+        chart_img = _generate_confidence_chart_image(timeline)
+        if chart_img:
+            elements.append(Paragraph("<b>Confidence Timeline</b>", styles["SubSection"]))
+            elements.append(Paragraph(
+                "<i>Per-frame manipulation confidence across the video duration.</i>",
+                styles["InsightText"],
+            ))
+            elements.append(Spacer(1, 4))
+            elements.append(chart_img)
+            elements.append(Spacer(1, 10))
+            
     # Suspicious frames (video)
     sus_frames = forensics.get("suspicious_frames", [])
     if sus_frames:

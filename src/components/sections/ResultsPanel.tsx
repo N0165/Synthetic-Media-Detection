@@ -129,7 +129,7 @@ const TemporalChart = ({ timeline }: { timeline: { frame: number; timestamp: num
                   contentStyle={{ backgroundColor: "#0D1117", border: "1px solid var(--border)", color: "var(--primary)", fontSize: 12 }}
                   itemStyle={{ color: "var(--primary)" }}
                   labelFormatter={(v) => `${v}s`}
-                  formatter={(value: any) => [`${Number(value || 0).toFixed(1)}%`, "Manipulation"]}
+                  formatter={(value: unknown) => [`${Number((value as number) || 0).toFixed(1)}%`, "Manipulation"]}
                 />
                 <ReferenceLine y={50} stroke="#ef4444" strokeDasharray="5 5" strokeWidth={1} label={{ value: "Threshold", fill: "#4B5260", fontSize: 9 }} />
                 <Line
@@ -137,9 +137,9 @@ const TemporalChart = ({ timeline }: { timeline: { frame: number; timestamp: num
                   dataKey="confidence"
                   stroke="#ef4444"
                   strokeWidth={2}
-                  dot={(props: any) => {
+                  dot={(props: { cx?: number; cy?: number; payload?: { verdict?: string } }) => {
                     const { cx, cy, payload } = props;
-                    const color = payload.verdict === "DEEPFAKE" ? "#ef4444" : payload.verdict === "SUSPICIOUS" ? "#eab308" : "#22c55e";
+                    const color = payload?.verdict === "DEEPFAKE" ? "#ef4444" : payload?.verdict === "SUSPICIOUS" ? "#eab308" : "#22c55e";
                     return <circle cx={cx} cy={cy} r={4} fill={color} stroke={color} />;
                   }}
                   activeDot={{ r: 6, fill: "#ef4444" }}
@@ -203,7 +203,20 @@ const AnnotatedVideoPlayer = ({ videoSrc }: { videoSrc: string }) => {
 };
 
 /* ── EXIF Integrity Card ───────────────────────────────── */
-const ExifIntegrityCard = ({ metadata, fileInfo }: { metadata: any; fileInfo: any }) => {
+interface MediaMetadata {
+  risk_score?: number;
+  has_exif?: boolean;
+  ai_indicators?: string[];
+  details?: string[];
+}
+
+interface MediaFileInfo {
+  content_type?: string;
+  size_bytes?: number;
+  filename?: string;
+}
+
+const ExifIntegrityCard = ({ metadata, fileInfo }: { metadata?: MediaMetadata | undefined; fileInfo?: MediaFileInfo | undefined }) => {
   const fields: { label: string; value: string; status: "ok" | "warn" | "error" }[] = [];
 
   if (fileInfo?.content_type) {
@@ -340,9 +353,10 @@ export default function ResultsPanel({ result, forensics = {}, uploadedFile }: R
                       const report = await generateReport(uploadedFile);
                       const url = getReportDownloadUrl(report.download_url);
                       window.open(url, "_blank", "noopener,noreferrer");
-                    } catch (err: any) {
+                    } catch (err: unknown) {
                       console.error("Report generation failed:", err);
-                      alert(`Report generation failed: ${err?.message || "Unknown error. Check if backend is running."}`);
+                      const message = err instanceof Error ? err.message : "Unknown error. Check if backend is running.";
+                      alert(`Report generation failed: ${message}`);
                     } finally {
                       setIsGeneratingReport(false);
                     }

@@ -19,8 +19,9 @@ export async function GET() {
       console.warn(`[Cron] Keep-alive ping returned unexpected status: ${response.status}`);
       return NextResponse.json({ success: false, message: "Unexpected status from backend" }, { status: 500 });
     }
-  } catch (error: any) {
-    console.error("[Cron] Keep-alive ping failed:", error.message);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[Cron] Keep-alive ping failed:", message);
+    return NextResponse.json({ success: false, error: message }, { status: 500 });
   }
 }

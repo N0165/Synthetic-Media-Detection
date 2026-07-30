@@ -101,7 +101,7 @@ export default function VideoInsights({ insights }: VideoInsightsProps) {
       {/* Insight Cards */}
       <div className="p-4 space-y-3">
         {insights.ai_insights.map((insight, idx) => {
-          const config = SEVERITY_CONFIG[insight.severity] || SEVERITY_CONFIG.medium || { color: "#eab308", icon: Info as any, bg: "rgba(234,179,8,0.06)" };
+          const config = SEVERITY_CONFIG[insight.severity] || SEVERITY_CONFIG.medium || { color: "#eab308", icon: Info, bg: "rgba(234,179,8,0.06)" }
           const Icon = config.icon;
 
           return (
