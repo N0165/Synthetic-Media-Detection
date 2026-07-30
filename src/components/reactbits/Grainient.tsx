@@ -155,12 +155,10 @@ const Grainient: React.FC<GrainientProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  const isInView = useInView(containerRef, { margin: "200px", once: true });
-  const isInViewRef = useRef(isInView);
-  useEffect(() => { isInViewRef.current = isInView; }, [isInView]);
+  const hasStarted = useInView(containerRef, { margin: "200px", once: true });
 
   useEffect(() => {
-    if (!containerRef.current || !isInView) return;
+    if (!containerRef.current || !hasStarted) return;
 
     const renderer = new Renderer({
       webgl: 2,
@@ -226,18 +224,41 @@ const Grainient: React.FC<GrainientProps> = ({
     setSize();
 
     let raf = 0;
+    let isRunning = false;
     const t0 = performance.now();
     const loop = (t: number) => {
-      if (isInViewRef.current) {
-        (program.uniforms.iTime as { value: number }).value = (t - t0) * 0.001;
-        renderer.render({ scene: mesh });
-      }
+      (program.uniforms.iTime as { value: number }).value = (t - t0) * 0.001;
+      renderer.render({ scene: mesh });
       raf = requestAnimationFrame(loop);
     };
-    raf = requestAnimationFrame(loop);
+
+    const startLoop = () => {
+      if (isRunning) return;
+      isRunning = true;
+      raf = requestAnimationFrame(loop);
+    };
+    const stopLoop = () => {
+      isRunning = false;
+      cancelAnimationFrame(raf);
+    };
+
+    const visibilityObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            startLoop();
+          } else {
+            stopLoop();
+          }
+        });
+      },
+      { threshold: 0 }
+    );
+    visibilityObserver.observe(container);
 
     return () => {
-      cancelAnimationFrame(raf);
+      stopLoop();
+      visibilityObserver.disconnect();
       ro.disconnect();
       try {
         container.removeChild(canvas);
@@ -246,7 +267,7 @@ const Grainient: React.FC<GrainientProps> = ({
       }
     };
   }, [
-    isInView,
+    hasStarted,
     timeSpeed, colorBalance, warpStrength, warpFrequency, warpSpeed,
     warpAmplitude, blendAngle, blendSoftness, rotationAmount, noiseScale,
     grainAmount, grainScale, grainAnimated, contrast, gamma, saturation,

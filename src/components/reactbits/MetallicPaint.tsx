@@ -338,8 +338,6 @@ export default function MetallicPaint({
   const [textureReady, setTextureReady] = useState(false);
 
   const isInView = useInView(canvasRef, { margin: "200px" });
-  const isInViewRef = useRef(isInView);
-  useEffect(() => { isInViewRef.current = isInView; }, [isInView]);
 
   useEffect(() => {
     speedRef.current = speed;
@@ -517,7 +515,7 @@ export default function MetallicPaint({
   ]);
 
   useEffect(() => {
-    if (!ready || !textureReady) return;
+    if (!ready || !textureReady || !isInView) return;
 
     const gl = glRef.current;
     const u = uniformsRef.current;
@@ -534,12 +532,6 @@ export default function MetallicPaint({
     canvas.addEventListener('mousemove', handleMouseMove);
 
     const render = (time: number) => {
-      if (!isInViewRef.current) {
-        lastTimeRef.current = time;
-        rafRef.current = requestAnimationFrame(render);
-        return;
-      }
-
       const delta = time - lastTimeRef.current;
       lastTimeRef.current = time;
 
@@ -563,7 +555,7 @@ export default function MetallicPaint({
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       canvas.removeEventListener('mousemove', handleMouseMove);
     };
-  }, [ready, textureReady]);
+ }, [ready, textureReady, isInView]);
 
   return <canvas ref={canvasRef} className="paint-container" />;
 }

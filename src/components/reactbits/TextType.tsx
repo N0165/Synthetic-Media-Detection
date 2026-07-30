@@ -171,14 +171,18 @@ const TextType = ({
   const shouldHideCursor =
     hideCursorWhileTyping && (currentCharIndex < (textArray[currentTextIndex] || '').length || isDeleting);
 
-    const highlightedText = useMemo(() => {
-      let result = displayedText;
+    const highlightedSegments = useMemo(() => {
       const wordsToColor = ["authentic", "secure", "AI", "spot", "synthetic"];
-      wordsToColor.forEach(word => {
-        const regex = new RegExp(`\\b(${word})\\b`, 'gi');
-        result = result.replace(regex, '<span style="color: #FF0000;">$1</span>');
+      const pattern = new RegExp(`\\b(${wordsToColor.join('|')})\\b`, 'gi');
+      const parts = displayedText.split(pattern);
+      return parts.map((part, i) => {
+        const isMatch = wordsToColor.some(w => w.toLowerCase() === part.toLowerCase());
+        return isMatch ? (
+          <span key={i} style={{ color: '#FF0000' }}>{part}</span>
+        ) : (
+          part
+        );
       });
-      return result;
     }, [displayedText]);
 
     return createElement(
@@ -191,8 +195,9 @@ const TextType = ({
       <span 
         className="text-type__content" 
         style={{ color: getCurrentTextColor() || 'inherit' }}
-        dangerouslySetInnerHTML={{ __html: highlightedText }}
-      />,
+      >
+        {highlightedSegments}
+      </span>,
     showCursor && (
       <span
         ref={cursorRef}

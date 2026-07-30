@@ -144,10 +144,8 @@ export default function MagicRings({
   const burstRef = useRef(0);
   const timeRef = useRef(0);
   
-  const isInView = useInView(mountRef, { margin: "200px", once: true });
+  const hasStarted = useInView(mountRef, { margin: "200px", once: true });
   const shouldReduceMotion = useReducedMotion();
-  const isInViewRef = useRef(isInView);
-  useEffect(() => { isInViewRef.current = isInView; }, [isInView]);
 
   propsRef.current = {
     color, 
@@ -167,7 +165,7 @@ export default function MagicRings({
 
   useEffect(() => {
     const mount = mountRef.current;
-    if (!mount || !isInView) return;
+    if (!mount || !hasStarted) return;
 
     let renderer: THREE.WebGLRenderer;
     try {
@@ -250,6 +248,7 @@ export default function MagicRings({
     mount.addEventListener('click', onClick);
 
     let frameId: number;
+    let isRunning = false;
     let lastTime = performance.now();
     const animate = (t: number) => {
       frameId = requestAnimationFrame(animate);
@@ -257,8 +256,6 @@ export default function MagicRings({
       lastTime = t;
 
       const p = propsRef.current!;
-
-      if (!isInViewRef.current) return;
 
       if (!shouldReduceMotion) {
         timeRef.current += deltaTime * p.speed;
@@ -294,10 +291,35 @@ export default function MagicRings({
 
       renderer.render(scene, camera);
     };
-    frameId = requestAnimationFrame(animate);
+
+    const startLoop = () => {
+      if (isRunning) return;
+      isRunning = true;
+      lastTime = performance.now();
+      frameId = requestAnimationFrame(animate);
+    };
+    const stopLoop = () => {
+      isRunning = false;
+      cancelAnimationFrame(frameId);
+    };
+
+    const visibilityObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            startLoop();
+          } else {
+            stopLoop();
+          }
+        });
+      },
+      { threshold: 0 }
+    );
+    visibilityObserver.observe(mount);
 
     return () => {
-      cancelAnimationFrame(frameId);
+      stopLoop();
+      visibilityObserver.disconnect();
       window.removeEventListener('resize', resize);
       ro.disconnect();
       mount.removeEventListener('mousemove', onMouseMove);
@@ -310,7 +332,7 @@ export default function MagicRings({
       quad.geometry.dispose();
       scene.remove(quad);
     };
-  }, [isInView]);
+  }, [hasStarted]);
 
   return <div ref={mountRef} className="magic-rings-container" style={blur > 0 ? { filter: `blur(${blur}px)` } : undefined} />;
 }

@@ -17,6 +17,7 @@ const VERDICT_COLORS: Record<string, string> = {
 
 const MAX_FILES = 10;
 const MAX_TOTAL_MB = 100;
+const MAX_FILE_SIZE_MB = 25;
 
 export default function BatchUpload() {
   const [files, setFiles] = useState<File[]>([]);
@@ -36,6 +37,11 @@ export default function BatchUpload() {
       const totalSize = combined.reduce((acc, f) => acc + f.size, 0);
       if (totalSize > MAX_TOTAL_MB * 1024 * 1024) {
         setError(`Maximum total payload size is ${MAX_TOTAL_MB}MB.`);
+        return prev;
+      }
+      const oversizedFile = newFiles.find((f) => f.size > MAX_FILE_SIZE_MB * 1024 * 1024);
+      if (oversizedFile) {
+        setError(`"${oversizedFile.name}" exceeds the ${MAX_FILE_SIZE_MB}MB individual file limit.`);
         return prev;
       }
       return combined;
@@ -142,6 +148,12 @@ export default function BatchUpload() {
             <h3 className="text-lg text-primary mb-2">Drag and drop multiple files</h3>
             <p className="text-sm text-muted">or click to browse from your device</p>
           </div>
+
+          {error && (
+            <div className="p-4 border border-red-500/30 bg-red-500/10 text-red-500 text-sm">
+              {error}
+            </div>
+          )}
 
           <AnimatePresence>
             {files.length > 0 && (

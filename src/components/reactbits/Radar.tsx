@@ -156,12 +156,10 @@ export default function Radar({
 }: RadarProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const isInView = useInView(containerRef, { margin: "200px", once: true });
-  const isInViewRef = useRef(isInView);
-  useEffect(() => { isInViewRef.current = isInView; }, [isInView]);
+  const hasStarted = useInView(containerRef, { margin: "200px", once: true });
 
   useEffect(() => {
-    if (!containerRef.current || !isInView) return;
+    if (!containerRef.current || !hasStarted) return;
     const container = containerRef.current;
     
     // Setting alpha to true natively enforces webgl transparency!
@@ -232,10 +230,10 @@ export default function Radar({
     }
 
     let animationFrameId: number;
+    let isRunning = false;
 
     function update(time: number) {
       animationFrameId = requestAnimationFrame(update);
-      if (!isInViewRef.current) return;
 
       program.uniforms.uTime.value = time * 0.001;
 
@@ -251,10 +249,34 @@ export default function Radar({
 
       renderer.render({ scene: mesh });
     }
-    animationFrameId = requestAnimationFrame(update);
+
+    function startLoop() {
+      if (isRunning) return;
+      isRunning = true;
+      animationFrameId = requestAnimationFrame(update);
+    }
+    function stopLoop() {
+      isRunning = false;
+      cancelAnimationFrame(animationFrameId);
+    }
+
+    const visibilityObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            startLoop();
+          } else {
+            stopLoop();
+          }
+        });
+      },
+      { threshold: 0 }
+    );
+    visibilityObserver.observe(container);
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
+      stopLoop();
+      visibilityObserver.disconnect();
       window.removeEventListener('resize', resize);
       if (enableMouseInteraction) {
         gl.canvas.removeEventListener('mousemove', handleMouseMove);
@@ -263,7 +285,7 @@ export default function Radar({
       container.removeChild(gl.canvas);
       gl.getExtension('WEBGL_lose_context')?.loseContext();
     };
-  }, [isInView, speed, scale, ringCount, spokeCount, ringThickness, spokeThickness, sweepSpeed, sweepWidth, sweepLobes, color, backgroundColor, falloff, brightness, enableMouseInteraction, mouseInfluence]);
+  }, [hasStarted, speed, scale, ringCount, spokeCount, ringThickness, spokeThickness, sweepSpeed, sweepWidth, sweepLobes, color, backgroundColor, falloff, brightness, enableMouseInteraction, mouseInfluence]);
 
   return <div ref={containerRef} className="radar-container" />;
 }

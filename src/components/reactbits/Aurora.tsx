@@ -180,6 +180,8 @@ export default function Aurora({
     ctn.appendChild(gl.canvas);
 
     let animateId = 0;
+    let isRunning = false;
+
     const update = (t: number) => {
       animateId = requestAnimationFrame(update);
       const p = propsRef.current;
@@ -193,11 +195,37 @@ export default function Aurora({
       });
       renderer.render({ scene: mesh });
     };
-    animateId = requestAnimationFrame(update);
+
+    const startLoop = () => {
+      if (isRunning) return;
+      isRunning = true;
+      animateId = requestAnimationFrame(update);
+    };
+
+    const stopLoop = () => {
+      isRunning = false;
+      cancelAnimationFrame(animateId);
+    };
+
+    const visibilityObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            startLoop();
+          } else {
+            stopLoop();
+          }
+        });
+      },
+      { threshold: 0 }
+    );
+    visibilityObserver.observe(ctn);
+
     resize();
 
     return () => {
-      cancelAnimationFrame(animateId);
+      stopLoop();
+      visibilityObserver.disconnect();
       window.removeEventListener("resize", resize);
       if (ctn && gl.canvas.parentNode === ctn) {
         ctn.removeChild(gl.canvas);

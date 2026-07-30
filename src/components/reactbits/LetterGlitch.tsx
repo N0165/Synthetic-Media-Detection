@@ -179,11 +179,6 @@ const LetterGlitch = ({
   };
 
   const animate = () => {
-    if (!isInViewRef.current) {
-      animationRef.current = requestAnimationFrame(animate);
-      return;
-    }
-
     const now = Date.now();
     if (now - lastGlitchTime.current >= glitchSpeed) {
       updateLetters();
@@ -198,33 +193,54 @@ const LetterGlitch = ({
     animationRef.current = requestAnimationFrame(animate);
   };
 
+  const startLoop = () => {
+    if (animationRef.current !== null) return;
+    animate();
+  };
+
+  const stopLoop = () => {
+    if (animationRef.current !== null) {
+      cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
+    }
+  };
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     context.current = canvas.getContext('2d');
     resizeCanvas();
-    animate();
+    if (isInViewRef.current) startLoop();
 
     let resizeTimeout: ReturnType<typeof setTimeout>;
 
     const handleResize = () => {
       clearTimeout(resizeTimeout);
       resizeTimeout = setTimeout(() => {
-        cancelAnimationFrame(animationRef.current as number);
+        stopLoop();
         resizeCanvas();
-        animate();
+        if (isInViewRef.current) startLoop();
       }, 100);
     };
 
     window.addEventListener('resize', handleResize);
 
     return () => {
-      cancelAnimationFrame(animationRef.current!);
+      stopLoop();
       window.removeEventListener('resize', handleResize);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [glitchSpeed, smooth]);
+
+  useEffect(() => {
+    if (isInView) {
+      startLoop();
+    } else {
+      stopLoop();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isInView]);
 
   const containerStyle = {
     position: 'absolute',

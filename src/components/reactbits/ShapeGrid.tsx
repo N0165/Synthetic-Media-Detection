@@ -39,14 +39,12 @@ const ShapeGrid: React.FC<ShapeGridProps> = ({
   const trailCells = useRef<GridOffset[]>([]);
   const cellOpacities = useRef<Map<string, number>>(new Map());
 
-  const isInView = useInView(canvasRef, { margin: "200px", once: true });
+  const hasStarted = useInView(canvasRef, { margin: "200px", once: true });
   const shouldReduceMotion = useReducedMotion();
-  const isInViewRef = useRef(isInView);
-  useEffect(() => { isInViewRef.current = isInView; }, [isInView]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !isInView) return;
+    if (!canvas || !hasStarted) return;
     const ctx = canvas.getContext('2d');
 
     const isHex = shape === 'hexagon';
@@ -245,11 +243,6 @@ const ShapeGrid: React.FC<ShapeGridProps> = ({
     };
 
     const updateAnimation = () => {
-      if (!isInViewRef.current) {
-        requestRef.current = requestAnimationFrame(updateAnimation);
-        return;
-      }
-
       const effectiveSpeed = shouldReduceMotion ? 0 : Math.max(speed, 0.1);
       const wrapX = isHex ? hexHoriz * 2 : squareSize;
       const wrapY = isHex ? hexVert : isTri ? squareSize * 2 : squareSize;
@@ -419,15 +412,40 @@ const ShapeGrid: React.FC<ShapeGridProps> = ({
 
     canvas.addEventListener('mousemove', handleMouseMove);
     canvas.addEventListener('mouseleave', handleMouseLeave);
-    requestRef.current = requestAnimationFrame(updateAnimation);
+
+    let isRunning = false;
+    const startLoop = () => {
+      if (isRunning) return;
+      isRunning = true;
+      requestRef.current = requestAnimationFrame(updateAnimation);
+    };
+    const stopLoop = () => {
+      isRunning = false;
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    };
+
+    const visibilityObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            startLoop();
+          } else {
+            stopLoop();
+          }
+        });
+      },
+      { threshold: 0 }
+    );
+    visibilityObserver.observe(canvas);
 
     return () => {
       window.removeEventListener('resize', resizeCanvas);
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      stopLoop();
+      visibilityObserver.disconnect();
       canvas.removeEventListener('mousemove', handleMouseMove);
       canvas.removeEventListener('mouseleave', handleMouseLeave);
     };
-  }, [isInView, direction, speed, borderColor, hoverFillColor, squareSize, shape, hoverTrailAmount]);
+  }, [hasStarted, direction, speed, borderColor, hoverFillColor, squareSize, shape, hoverTrailAmount]);
 
   return <canvas ref={canvasRef} className="shapegrid-canvas"></canvas>;
 };
