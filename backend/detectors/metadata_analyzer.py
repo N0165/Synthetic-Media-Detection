@@ -12,6 +12,7 @@ Improvements over v1:
 """
 
 import os
+import json
 import struct
 import json
 from PIL import Image
@@ -214,18 +215,23 @@ def analyze_metadata(file_path: str) -> dict:
         pass
 
     # 7. Check for C2PA / Content Credentials
-    c2pa_found = _check_c2pa(file_path)
-    if c2pa_found:
-        details.append("📋 C2PA Content Credentials detected — content provenance available")
-        ai_indicators.append("C2PA Content Credentials present")
-        
-        # If C2PA is present but standard camera EXIF is missing or it's a fixed AI size, 
-        # it is almost certainly an AI generator like DALL-E 3 or Firefly.
-        if not has_exif or "Standard AI generation size" in " ".join(ai_indicators):
-            risk_score += 35
-            details.append("🚨 Suspicious C2PA payload: Missing standard camera EXIF combined with C2PA strongly indicates AI generation (e.g. DALL-E 3).")
+    c2pa_result = _check_c2pa(file_path)
+    if c2pa_result["present"]:
+        if c2pa_result["valid"]:
+            details.append("📋 C2PA Content Credentials detected and cryptographically verified — provenance signature is intact.")
+            ai_indicators.append("C2PA Content Credentials present (verified)")
+
+            # If C2PA is present but standard camera EXIF is missing or it's a fixed AI size,
+            # it is almost certainly an AI generator like DALL-E 3 or Firefly.
+            if not has_exif or "Standard AI generation size" in " ".join(ai_indicators):
+                risk_score += 35
+                details.append("🚨 Suspicious C2PA payload: Missing standard camera EXIF combined with C2PA strongly indicates AI generation (e.g. DALL-E 3).")
+            else:
+                risk_score += 5
         else:
-            risk_score += 5
+            details.append("🚨 C2PA manifest found but FAILED cryptographic validation — signature is broken or the file was altered after signing.")
+            ai_indicators.append("C2PA Content Credentials present (validation FAILED)")
+            risk_score += 40
 
     # Clamp risk score
     risk_score = min(100, risk_score)
@@ -306,29 +312,42 @@ def _extract_png_chunks(file_path: str) -> dict:
     return result
 
 
-def _check_c2pa(file_path: str) -> bool:
+def _check_c2pa(file_path: str) -> dict:
     """
-    Cryptographic check for C2PA (Content Credentials) markers using official SDK.
+    Cryptographic check for C2PA (Content Credentials) using the official SDK.
+    Returns {"present": bool, "valid": bool} — presence alone does NOT mean
+    the signature actually validated; validation_status must be checked too.
+    A manifest can exist but still be tampered with or broken.
     """
     try:
         import c2pa
         reader = c2pa.Reader.from_file(file_path)
         manifest_store = reader.get_manifest_store()
-        if manifest_store and manifest_store.active_manifest:
-            # Cryptographically verified manifest exists!
-            return True
+        if not (manifest_store and manifest_store.active_manifest):
+            return {"present": False, "valid": False}
+
+        try:
+            manifest_json = json.loads(reader.json())
+            validation_status = manifest_json.get("validation_status", [])
+            is_valid = len(validation_status) == 0
+        except Exception:
+            # Couldn't confirm validation status — don't claim it's valid
+            is_valid = False
+
+        return {"present": True, "valid": is_valid}
     except ImportError:
-        # Fallback to magic bytes if c2pa-python is missing
+        # Fallback to magic bytes if c2pa-python is missing — this can only
+        # detect presence, never actual validity, with this crude method.
         try:
             with open(file_path, "rb") as f:
                 content = f.read(min(os.path.getsize(file_path), 65536))
                 if b'c2pa' in content or b'C2PA' in content or b'jumb' in content:
-                    return True
+                    return {"present": True, "valid": False}
         except Exception:
             pass
-    except Exception as e:
+    except Exception:
         pass
-    return False
+    return {"present": False, "valid": False}
 
 
 def _empty_result(details):
