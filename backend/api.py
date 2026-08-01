@@ -693,12 +693,7 @@ async def detect_full_endpoint(file: UploadFile = File(...)):
             # Generate a second spectrogram view (linear frequency)
             forensics_data["audio_spectrogram"] = generate_linear_spectrogram_b64(temp_path)
 
-        is_ai, matched_tool = _check_filename_for_ai(file.filename)
-        if is_ai:
-            result["verdict"] = "DEEPFAKE"
-            result["confidence"] = 95.0
-            result["details"].append(f"🚨 Filename contains AI tool signature: '{matched_tool}'")
-            
+           
         from utils.explainer import generate_ai_insights
         ai_insights = generate_ai_insights(result, media_type)
 

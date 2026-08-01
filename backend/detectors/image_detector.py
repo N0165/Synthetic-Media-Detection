@@ -41,14 +41,25 @@ from PIL import Image, ImageChops, ImageEnhance, ImageFile
 import io
 import concurrent.futures
 from scipy.fft import dctn
-from transformers import AutoImageProcessor, AutoModelForImageClassification
-
+from transformers import AutoImageProcessor, AutoModelForImageClassification, CLIPModel, CLIPProcessor
 # Allow loading of truncated/corrupted image files gracefully
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # ── Model configs ─────────────────────────────────────────────
 MODEL_A = "openai/clip-vit-large-patch14" 
 # UFD (Universal Fake Detect via CLIP) - Zero-shot diffusion detection
+
+CLIP_REAL_PROMPTS = [
+    "a real photograph",
+    "an authentic photo taken by a camera",
+    "a genuine unedited photograph of a real scene",
+]
+CLIP_FAKE_PROMPTS = [
+    "an AI-generated image",
+    "a synthetic image created by an image generation model",
+    "a deepfake or digitally fabricated image",
+    "an image created by Stable Diffusion, Midjourney, or DALL-E",
+]
 
 MODEL_B = "umm-maybe/AI-image-detector"
 # Swin, {0: "artificial", 1: "human"}
@@ -68,7 +79,7 @@ _load_err_b = ""
 
 # ── Ensemble weights (tuned for maximum coverage) ─────────────
 MODEL_WEIGHTS = {
-    "Deep-Fake-Detector-v2 (ViT)": 1.0,
+    "CLIP-UFD (Zero-Shot)": 1.0,
     "AI-image-detector (Swin)": 1.0,
     "_ELA": 0.10,
     "_FREQ": 0.10,
@@ -119,32 +130,47 @@ def detect_faces(image: Image.Image) -> list:
     """
     Detect face regions in a PIL image.
     Returns list of (x, y, w, h) tuples with padding applied.
+    Handles both YuNet (cv2.FaceDetectorYN) and the Haar Cascade
+    fallback, since they use different APIs and color formats.
     """
     cascade = _get_face_cascade()
     if cascade is None:
         return []
 
-    # Convert to grayscale numpy array
     img_array = np.array(image)
+    # Convert PIL's RGB to OpenCV's expected BGR
     if len(img_array.shape) == 3:
-        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
     else:
-        gray = img_array
+        bgr = cv2.cvtColor(img_array, cv2.COLOR_GRAY2BGR)
 
-    # Detect faces at multiple scales
-    faces = cascade.detectMultiScale(
-        gray,
-        scaleFactor=1.1,
-        minNeighbors=5,
-        minSize=(60, 60),
-        flags=cv2.CASCADE_SCALE_IMAGE,
-    )
+    h_img, w_img = bgr.shape[:2]
+    faces = []
+
+    if isinstance(cascade, cv2.FaceDetectorYN):
+        # YuNet: needs the color image + an explicit input size, and
+        # returns an Nx15 array (x, y, w, h, 5 landmark pairs, score).
+        cascade.setInputSize((w_img, h_img))
+        _, detections = cascade.detect(bgr)
+        if detections is not None:
+            for det in detections:
+                x, y, w, h = det[:4].astype(int)
+                faces.append((int(x), int(y), int(w), int(h)))
+    else:
+        # Haar cascade fallback: needs grayscale + detectMultiScale
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        faces = cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(60, 60),
+            flags=cv2.CASCADE_SCALE_IMAGE,
+        )
 
     if len(faces) == 0:
         return []
 
     # Add padding
-    h_img, w_img = gray.shape[:2]
     padded_faces = []
     for (x, y, w, h) in faces:
         pad_w = int(w * FACE_PADDING)
@@ -167,7 +193,7 @@ def crop_face(image: Image.Image, face_box: tuple) -> Image.Image:
 # ══════════════════════════════════════════════════════════════
 
 def preload_models():
-    """Load dima806/deepfake_vs_real_image_detection (ViT) and umm-maybe/AI-image-detector (Swin)."""
+    """Load CLIP ViT-L/14 (zero-shot, Model A) and umm-maybe/AI-image-detector (Swin, Model B)."""
     global _model_a_processor, _model_a, _load_err_a
     global _model_b_processor, _model_b, _load_err_b
     
@@ -175,12 +201,12 @@ def preload_models():
     
     if _model_a is None:
         try:
-            print(f"[ImageDetector] Loading Model A: {MODEL_A} ...")
-            _model_a_processor = AutoImageProcessor.from_pretrained(MODEL_A, token=token)
-            _model_a = AutoModelForImageClassification.from_pretrained(MODEL_A, token=token)
+            print(f"[ImageDetector] Loading Model A (CLIP zero-shot): {MODEL_A} ...")
+            _model_a_processor = CLIPProcessor.from_pretrained(MODEL_A, token=token)
+            _model_a = CLIPModel.from_pretrained(MODEL_A, token=token)
             _model_a.to(DEVICE)
             _model_a.eval()
-            print(f"[ImageDetector] Model A loaded ✓  Labels: {_model_a.config.id2label}")
+            print("[ImageDetector] Model A (CLIP zero-shot) loaded ✓")
         except Exception as e:
             _load_err_a = str(e)
             print(f"[ImageDetector] Model A FAILED: {e}")
@@ -264,7 +290,59 @@ def _infer(processor, model, image: Image.Image, model_name: str) -> dict:
             "probs": {"error": 100.0},
         }
 
+def _infer_clip_zero_shot(processor, model, image: Image.Image, model_name: str) -> dict:
+    """
+    Zero-shot fake/real classification using CLIP's image-text similarity —
+    NOT a fine-tuned classification head (base CLIP ViT-L/14 doesn't have one).
+    Compares the image embedding against a set of "real" vs "fake" text
+    prompts and derives a fake_probability from the relative similarity.
+    """
+    try:
+        if image.mode not in ("RGB", "L"):
+            image = image.convert("RGB")
+        if image.mode == "L":
+            image = image.convert("RGB")
 
+        min_dim = 224
+        w, h = image.size
+        if w < min_dim or h < min_dim:
+            scale = max(min_dim / w, min_dim / h)
+            image = image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+        prompts = CLIP_REAL_PROMPTS + CLIP_FAKE_PROMPTS
+        n_real = len(CLIP_REAL_PROMPTS)
+
+        inputs = processor(text=prompts, images=image, return_tensors="pt", padding=True)
+        inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = model(**inputs)
+            logits_per_image = outputs.logits_per_image  # shape: [1, n_prompts]
+            probs = torch.nn.functional.softmax(logits_per_image, dim=-1)[0]
+
+        real_score = probs[:n_real].sum().item() * 100
+        fake_score = probs[n_real:].sum().item() * 100
+
+        predicted_label = "fake" if fake_score >= real_score else "real"
+        confidence = max(fake_score, real_score)
+
+        return {
+            "model": model_name,
+            "label": predicted_label,
+            "confidence": confidence,
+            "fake_probability": round(fake_score, 2),
+            "probs": {"real": round(real_score, 2), "fake": round(fake_score, 2)},
+        }
+    except Exception as e:
+        print(f"[ImageDetector] _infer_clip_zero_shot error on {model_name}: {e}")
+        return {
+            "model": model_name,
+            "label": "error",
+            "confidence": 0,
+            "fake_probability": 50.0,
+            "probs": {"error": 100.0},
+        }
+        
 def _extract_fake_prob(prob_dict: dict, model_name: str) -> float:
     """
     Extract the fake probability correctly based on known label mappings.
@@ -444,9 +522,9 @@ def detect_image(image: Image.Image) -> dict:
     # ── Step 3: Run Inference ─────────────────────────────
     if mod_a is not None:
         try:
-            r_a = _infer(proc_a, mod_a, analysis_image, MODEL_A)
+            r_a = _infer_clip_zero_shot(proc_a, mod_a, analysis_image, MODEL_A)
             model_results.append(r_a)
-            models_used.append("Deep-Fake-Detector-v2 (ViT)")
+            models_used.append("CLIP-UFD (Zero-Shot)")
         except Exception as e:
             print(f"[ImageDetector] Model A inference error: {e}")
 
@@ -497,20 +575,20 @@ def _ensemble(results: list, models_used: list, face_detected: bool, ela_score: 
     - Specifically calibrated to avoid false positives on natural camera sensor noise
     """
     # Parse probabilities from models
-    prob_vit = next((r["fake_probability"] for r, m in zip(results, models_used) if "ViT" in m), None)
+    prob_clip = next((r["fake_probability"] for r, m in zip(results, models_used) if "CLIP" in m), None)
     prob_swin = next((r["fake_probability"] for r, m in zip(results, models_used) if "Swin" in m), None)
     
     ensemble_fake = 0.0
     
     if len(results) == 0:
         ensemble_fake = 50.0
-    elif prob_vit is not None and prob_swin is not None:
+    elif prob_clip is not None and prob_swin is not None:
         if face_detected:
             # If a face is prominent, the ViT model is the most reliable (70/30 split)
-            ensemble_fake = (prob_vit * 0.70) + (prob_swin * 0.30)
+            ensemble_fake = (prob_clip * 0.70) + (prob_swin * 0.30)
         else:
             # Without a face, Swin model handles structural AI detection (10/90 split)
-            ensemble_fake = (prob_vit * 0.10) + (prob_swin * 0.90)
+            ensemble_fake = (prob_clip * 0.10) + (prob_swin * 0.90)
     else:
         # Fallback to mean if only one model loaded
         fake_probs = [r["fake_probability"] for r in results]
