@@ -8,6 +8,7 @@ import { CheckCircle2, AlertTriangle, XCircle, FileText, BadgeInfo, Scan, AudioL
 import DecryptedText from "@/components/reactbits/DecryptedText";
 import BorderGlow from "@/components/reactbits/BorderGlow";
 import FrameGallery from "@/components/sections/FrameGallery";
+import ProvenanceDashboard from "@/components/sections/ProvenanceDashboard";
 import VideoInsights from "@/components/sections/VideoInsights";
 
 const VERDICT_COLORS: Record<string, string> = {
@@ -456,6 +457,11 @@ export default function ResultsPanel({ result, forensics = {}, uploadedFile }: R
       {hasMetadata && (
         <div className="mb-6">
           <ExifIntegrityCard metadata={result.details?.metadata} fileInfo={result.file_info} />
+        </div>
+      )}
+      {hasMetadata && (
+        <div className="mb-6">
+          <ProvenanceDashboard metadata={result.details?.metadata} />
         </div>
       )}
 

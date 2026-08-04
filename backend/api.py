@@ -1033,6 +1033,22 @@ async def generate_report_endpoint(file: UploadFile = File(...)):
 
             from utils.forensics import generate_noisemap_b64
             forensics["noisemap"] = generate_noisemap_b64(pil_image)
+            
+        elif ext in ALLOWED_AUDIO_EXT:
+            forensics["spectrogram"] = generate_spectrogram_b64(temp_path)
+            forensics["waveform"] = generate_waveform_b64(temp_path)
+
+        elif ext in ALLOWED_VIDEO_EXT:
+            # Reuse det_result from Step 1 above instead of re-running
+            # detect_video() a second time — it already has what we need.
+            from utils.video_visualizer import generate_video_forensics
+            video_forensics = generate_video_forensics(
+                temp_path,
+                det_result.get("frame_results", []),
+                det_result.get("flagged_frames", []),
+            )
+            forensics["suspicious_frames"] = video_forensics.get("suspicious_frames", [])
+            forensics["frame_confidence_timeline"] = video_forensics.get("frame_confidence_timeline", [])
 
         # ── Step 3: Generate PDF ──────────────────────────────
         from utils.report_generator import generate_pdf_report
