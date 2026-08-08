@@ -1,9 +1,12 @@
 """
-Tattva.AI — Audio Deepfake Detector (v3 — Ensemble)
+Tattva.AI — Audio Deepfake Detector (v4 — AASIST + Ensemble)
 
-Uses an ensemble of two Wav2Vec2-based models for deepfake audio detection:
-  Model A:  garystafford/wav2vec2-deepfake-voice-detector
-            (97.9% accuracy, trained on ElevenLabs / Amazon Polly / Kokoro / Hume AI etc.)
+Uses an ensemble of two models for deepfake audio detection:
+  Model A:  AASIST (Audio Anti-Spoofing using Integrated Spectro-Temporal
+            Graph Attention Networks) — Jung et al., NAVER Corp, 2021.
+            Trained on ASVspoof2019 LA. Operates directly on raw waveform
+            (no hand-crafted features), vendored locally from the official
+            clovaai/aasist repo (MIT license) — see detectors/aasist/.
   Model B:  MelodyMachine/Deepfake-audio-detection-V2
             (secondary model for cross-validation)
   Fallback: Spectral analysis heuristics (if both models unavailable)
@@ -13,8 +16,9 @@ Ensemble Strategy (MAX — same as image detector):
   - If they disagree → MAX(fake_prob) * 0.9  (catches more fakes)
 
 Labels:
-  Class 0 → Real (human speech)
-  Class 1 → Fake (AI-generated)
+  AASIST:  index 0 → spoof (fake), index 1 → bonafide (real)
+           (matches the ASVspoof2019 label convention it was trained on)
+  Model B: Class 0 → Real, Class 1 → Fake
 """
 
 import os
@@ -28,13 +32,29 @@ except ImportError:
     LIBROSA_OK = False
 
 # ── Model config ──────────────────────────────────────────────
-HF_AUDIO_MODEL = "minhazpalas/AASIST-Graph-Attention"
-HF_AUDIO_MODEL_B = "minhazpalas/RawNet3-Audio-Anti-Spoofing"
-# Class 0 = real, Class 1 = fake
+AASIST_MODEL_NAME = "AASIST (clovaai, ASVspoof2019-LA)"
+HF_AUDIO_MODEL_B = "MelodyMachine/Deepfake-audio-detection-V2"
 
-# Model A (Wav2Vec2-XLSR) lazy-loading state
+# Fixed input length AASIST was trained with: ~4.0375s at 16kHz.
+# Shorter clips are tiled to this length, longer clips are truncated —
+# same convention as the reference implementation's data_utils.py.
+AASIST_NB_SAMP = 64600
+
+AASIST_CONFIG = {
+    "architecture": "AASIST",
+    "nb_samp": AASIST_NB_SAMP,
+    "first_conv": 128,
+    "filts": [70, [1, 32], [32, 32], [32, 64], [64, 64]],
+    "gat_dims": [64, 32],
+    "pool_ratios": [0.5, 0.7, 0.5, 0.5],
+    "temperatures": [2.0, 2.0, 100.0, 100.0],
+}
+AASIST_WEIGHTS_PATH = os.path.join(
+    os.path.dirname(__file__), "aasist", "weights", "AASIST.pth"
+)
+
+# Model A (AASIST) lazy-loading state
 _audio_model = None
-_feature_extractor = None
 _pipeline_loaded = False
 
 # Model B (MelodyMachine) lazy-loading state
@@ -49,25 +69,28 @@ def _get_hf_token():
 
 
 def _load_model():
-    """Lazy-load the Wav2Vec2 audio classification model (Model A)."""
-    global _audio_model, _feature_extractor, _pipeline_loaded
+    """Lazy-load the AASIST graph-attention anti-spoofing model (Model A)."""
+    global _audio_model, _pipeline_loaded
     if _pipeline_loaded:
-        return _audio_model, _feature_extractor
+        return _audio_model
     _pipeline_loaded = True
     try:
         import torch
-        from transformers import AutoModelForAudioClassification, AutoFeatureExtractor
-        token = _get_hf_token()
-        print(f"[AudioDetector] Loading model A: {HF_AUDIO_MODEL} ...")
-        _feature_extractor = AutoFeatureExtractor.from_pretrained(HF_AUDIO_MODEL, token=token)
-        _audio_model = AutoModelForAudioClassification.from_pretrained(HF_AUDIO_MODEL, token=token)
-        _audio_model.eval()
-        print("[AudioDetector] Wav2Vec2-XLSR model (A) loaded ✓")
+        from .aasist.aasist_model import Model as AASISTModel
+
+        print(f"[AudioDetector] Loading model A: {AASIST_MODEL_NAME} ...")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model = AASISTModel(AASIST_CONFIG)
+        state_dict = torch.load(AASIST_WEIGHTS_PATH, map_location=device)
+        model.load_state_dict(state_dict)
+        model.to(device)
+        model.eval()
+        _audio_model = model
+        print(f"[AudioDetector] AASIST model (A) loaded on {device} ✓")
     except Exception as e:
         print(f"[AudioDetector] Model A loading failed ({e}). Will try Model B or spectral fallback.")
         _audio_model = None
-        _feature_extractor = None
-    return _audio_model, _feature_extractor
+    return _audio_model
 
 
 def _load_model_b():
@@ -106,7 +129,7 @@ def detect_audio(audio_path: str) -> dict:
         verdict    : str — "DEEPFAKE" | "AUTHENTIC" | "SUSPICIOUS"
         confidence : float (0-100)
         details    : list[str]
-        method     : str — "wav2vec2_ensemble", "wav2vec2_xlsr",
+        method     : str — "aasist_ensemble", "aasist",
                            "melodymachine", or "spectral_analysis"
         features   : dict — extracted audio features
         models_used: list[str] — which models contributed to the result
@@ -127,10 +150,10 @@ def detect_audio(audio_path: str) -> dict:
         return _error("Audio too short (minimum 0.5 seconds).")
 
     # ── Attempt to load both models ──────────────────────────
-    model_a, extractor_a = _load_model()
+    model_a = _load_model()
     model_b, extractor_b = _load_model_b()
 
-    has_a = model_a is not None and extractor_a is not None
+    has_a = model_a is not None
     has_b = model_b is not None and extractor_b is not None
 
     # ── Run available models ─────────────────────────────────
@@ -138,8 +161,8 @@ def detect_audio(audio_path: str) -> dict:
     result_b = None
 
     if has_a:
-        result_a = _detect_with_wav2vec2(model_a, extractor_a, y, sr)
-        # If wav2vec2 inference failed, it falls back to spectral internally;
+        result_a = _detect_with_aasist(model_a, y, sr)
+        # If AASIST inference failed, it falls back to spectral internally;
         # detect that by checking the method field.
         if result_a.get("method") == "spectral_analysis":
             result_a = None  # Model A failed at inference time
@@ -155,7 +178,7 @@ def detect_audio(audio_path: str) -> dict:
 
     # ── Single model fallback ────────────────────────────────
     if result_a is not None:
-        result_a["models_used"] = [HF_AUDIO_MODEL]
+        result_a["models_used"] = [AASIST_MODEL_NAME]
         return result_a
 
     if result_b is not None:
@@ -168,29 +191,41 @@ def detect_audio(audio_path: str) -> dict:
     return result
 
 
-def _detect_with_wav2vec2(model, extractor, y, sr):
-    """Use the Wav2Vec2-XLSR deepfake voice detector model."""
+def _pad_to_aasist_length(y: np.ndarray, max_len: int = AASIST_NB_SAMP) -> np.ndarray:
+    """
+    Tile/truncate a raw waveform to AASIST's fixed training length.
+    Same convention as the reference implementation's data_utils.pad().
+    """
+    x_len = y.shape[0]
+    if x_len >= max_len:
+        return y[:max_len]
+    num_repeats = int(max_len / x_len) + 1
+    return np.tile(y, num_repeats)[:max_len]
+
+
+def _detect_with_aasist(model, y, sr):
+    """Use the AASIST graph-attention anti-spoofing model (raw waveform input)."""
     try:
         import torch
+        import torch.nn.functional as F
 
-        # Process audio with feature extractor
-        inputs = extractor(y, sampling_rate=16000, return_tensors="pt", padding=True)
+        device = next(model.parameters()).device
+
+        # AASIST expects mono 16kHz raw waveform, tiled/truncated to ~4.04s
+        y_16k = y if sr == 16000 else librosa.resample(y, orig_sr=sr, target_sr=16000)
+        x = _pad_to_aasist_length(y_16k.astype(np.float32))
+        x_tensor = torch.from_numpy(x).unsqueeze(0).to(device)  # [1, nb_samp]
 
         with torch.no_grad():
-            outputs = model(**inputs)
-            logits = outputs.logits
-            probs = torch.nn.functional.softmax(logits, dim=-1)[0]
+            _, logits = model(x_tensor)
+            probs = F.softmax(logits, dim=1)[0]
 
-        # Class 0 = Real, Class 1 = Fake
-        prob_real = probs[0].item() * 100
-        prob_fake = probs[1].item() * 100
+        # Label convention (from ASVspoof2019 training data): 0 = spoof, 1 = bonafide
+        prob_fake = probs[0].item() * 100
+        prob_real = probs[1].item() * 100
 
-        prob_dict = {
-            model.config.id2label.get(0, "real"): round(prob_real, 2),
-            model.config.id2label.get(1, "fake"): round(prob_fake, 2),
-        }
+        prob_dict = {"real": round(prob_real, 2), "fake": round(prob_fake, 2)}
 
-        # Determine verdict
         if prob_fake >= 70:
             verdict = "DEEPFAKE"
             confidence = prob_fake
@@ -205,7 +240,7 @@ def _detect_with_wav2vec2(model, extractor, y, sr):
         features = _extract_features(y, sr)
 
         details = [
-            f"🔬 **Wav2Vec2-XLSR Analysis** (garystafford model)",
+            f"🔬 **AASIST Analysis** (Graph Attention Anti-Spoofing, ASVspoof2019-LA)",
             f"Real probability: {prob_real:.1f}%",
             f"Fake probability: {prob_fake:.1f}%",
             f"Spectral centroid mean: {features['spectral_centroid_mean']:.1f} Hz",
@@ -226,7 +261,7 @@ def _detect_with_wav2vec2(model, extractor, y, sr):
             "verdict": verdict,
             "confidence": round(confidence, 2),
             "details": details,
-            "method": "wav2vec2_xlsr",
+            "method": "aasist",
             "features": features,
             "probs": prob_dict,
             "_prob_fake": prob_fake,
@@ -234,7 +269,7 @@ def _detect_with_wav2vec2(model, extractor, y, sr):
         }
 
     except Exception as e:
-        print(f"[AudioDetector] Wav2Vec2 inference failed: {e}, falling back to spectral.")
+        print(f"[AudioDetector] AASIST inference failed: {e}, falling back to spectral.")
         return _detect_spectral(y, sr)
 
 
@@ -358,7 +393,7 @@ def _ensemble_results(result_a, result_b, y, sr):
     details = [
         f"🔬 **Ensemble Audio Analysis** (2 models)",
         f"",
-        f"📊 **Model A — Wav2Vec2-XLSR** (garystafford)",
+        f"📊 **Model A — AASIST** (Graph Attention Anti-Spoofing)",
         f"  Real: {real_a:.1f}% | Fake: {fake_a:.1f}% → {verdict_a}",
         f"",
         f"📊 **Model B — MelodyMachine** (Deepfake-audio-detection-V2)",
@@ -395,10 +430,10 @@ def _ensemble_results(result_a, result_b, y, sr):
         "verdict": verdict,
         "confidence": round(confidence, 2),
         "details": details,
-        "method": "wav2vec2_ensemble",
+        "method": "aasist_ensemble",
         "features": features,
         "probs": combined_probs,
-        "models_used": [HF_AUDIO_MODEL, HF_AUDIO_MODEL_B],
+        "models_used": [AASIST_MODEL_NAME, HF_AUDIO_MODEL_B],
     }
 
 
@@ -523,3 +558,9 @@ def _error(message: str) -> dict:
         "features": {},
         "probs": {},
     }
+
+
+def preload_models():
+    """Load AASIST (Model A) and MelodyMachine (Model B) during server startup."""
+    _load_model()
+    _load_model_b()
